@@ -3,6 +3,7 @@ import zipfile
 import csv
 import logging
 import unicodedata
+import os
 from urllib.parse import quote
 from typing import List, Optional
 from email import policy
@@ -39,6 +40,9 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
+    for index_path in ("static/index.html", "dist/index.html"):
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
     return {"message": "Hello World. This is the API server. For the frontend, please visit http://localhost:5173"}
 
 # Logging setup
@@ -462,13 +466,9 @@ async def generate_drafts(
     )
 
 # Serve Frontend (Catch-all for SPA)
-# Checks if static folder exists (in production)
-import os
-if os.path.exists("static"):
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")
-else:
-    # For local dev without build, just a placeholder or nothing
-    pass
+frontend_dir = "static" if os.path.exists("static") else ("dist" if os.path.exists("dist") else None)
+if frontend_dir:
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="static")
 
 from backend.analyze_router import router as analyze_router
 app.include_router(analyze_router)
