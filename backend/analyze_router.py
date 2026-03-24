@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.orm import Session
 from typing import List, Dict
+import unicodedata
 import pandas as pd
 import io
 from .models import DraftConfig, get_db
@@ -8,6 +9,12 @@ from jinja2 import Template
 from pydantic import BaseModel
 
 router = APIRouter()
+
+def normalize_match_text(value: str) -> str:
+    # NFKC normalization makes full-width/half-width differences comparable.
+    normalized = unicodedata.normalize("NFKC", value or "")
+    # Ignore both half-width and full-width spaces for filename matching.
+    return normalized.replace(" ", "").replace("\u3000", "")
 
 class DraftReviewItem(BaseModel):
     filename: str
@@ -34,9 +41,10 @@ async def analyze_pdfs(
 
     for file in files:
         filename = file.filename
+        normalized_filename = normalize_match_text(filename)
         matched_config = None
         for config in configs:
-            if config.pdf_filename_keyword in filename:
+            if normalize_match_text(config.pdf_filename_keyword) in normalized_filename:
                 matched_config = config
                 break
         

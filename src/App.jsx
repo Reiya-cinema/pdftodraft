@@ -421,8 +421,50 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
   // Selected items state
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [editingRow, setEditingRow] = useState(null);
+  const [editingForm, setEditingForm] = useState(null);
+  const [bodyViewMode, setBodyViewMode] = useState("template");
+  const [columnWidths, setColumnWidths] = useState({
+    actions: 50,
+    keyword: 180,
+    company: 180,
+    department: 100,
+    person: 100,
+    toEmail: 100,
+    ccEmail: 100,
+    body: 120,
+  });
+  const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, text: "" });
   
   const [importLogs, setImportLogs] = useState(null);
+  const resizeStateRef = React.useRef({ key: null, startX: 0, startWidth: 0 });
+
+  const handleTemplateDownload = async () => {
+    try {
+      const res = await axios.get('/api/template-csv', {
+        params: activeLayout ? { layout_name: activeLayout } : {},
+        responseType: 'blob',
+      });
+
+      const disposition = res.headers['content-disposition'] || '';
+      const utf8FilenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      const plainFilenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+      const resolvedFilename = utf8FilenameMatch
+        ? decodeURIComponent(utf8FilenameMatch[1])
+        : (plainFilenameMatch ? plainFilenameMatch[1] : 'template.csv');
+
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }));
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = resolvedFilename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error(error);
+      alert('CSVのダウンロードに失敗しました');
+    }
+  };
 
   const fetchConfigs = useCallback(async () => {
     if (!activeLayout) return;
@@ -518,15 +560,104 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
     }
   };
 
+  useEffect(() => {
+    if (!editingRow) return;
+    setEditingForm({
+      layout_name: editingRow.layout_name || "",
+      pdf_filename_keyword: editingRow.pdf_filename_keyword || "",
+      company_name: editingRow.company_name || "",
+      department: editingRow.department || "",
+      name: editingRow.name || "",
+      honorific: editingRow.honorific || "",
+      to_email: editingRow.to_email || "",
+      cc_email: editingRow.cc_email || "",
+      body_template: editingRow.body_template || "",
+    });
+    setBodyViewMode("template");
+  }, [editingRow]);
+
+  const renderBodyPreview = () => {
+    if (!editingForm) return "";
+    const context = {
+      company_name: editingForm.company_name || "",
+      department: editingForm.department || "",
+      name: editingForm.name || "",
+      honorific: editingForm.honorific || "",
+      to_email: editingForm.to_email || "",
+      cc_email: editingForm.cc_email || "",
+    };
+    return (editingForm.body_template || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+      return Object.prototype.hasOwnProperty.call(context, key) ? context[key] : `{{ ${key} }}`;
+    });
+  };
+
+  const renderBodyPreviewFromRow = (row) => {
+    const context = {
+      company_name: row.company_name || "",
+      department: row.department || "",
+      name: row.name || "",
+      honorific: row.honorific || "",
+      to_email: row.to_email || "",
+      cc_email: row.cc_email || "",
+    };
+    return (row.body_template || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+      return Object.prototype.hasOwnProperty.call(context, key) ? context[key] : `{{ ${key} }}`;
+    });
+  };
+
+  const startColumnResize = (key, event) => {
+    event.preventDefault();
+    resizeStateRef.current = {
+      key,
+      startX: event.clientX,
+      startWidth: columnWidths[key],
+    };
+  };
+
+  useEffect(() => {
+    const onMouseMove = (event) => {
+      const { key, startX, startWidth } = resizeStateRef.current;
+      if (!key) return;
+      const diff = event.clientX - startX;
+      const next = Math.max(80, startWidth + diff);
+      setColumnWidths(prev => ({ ...prev, [key]: next }));
+    };
+
+    const onMouseUp = () => {
+      resizeStateRef.current = { key: null, startX: 0, startWidth: 0 };
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  const showBodyTooltip = (event, text) => {
+    setTooltip({
+      visible: true,
+      x: event.clientX + 12,
+      y: event.clientY + 12,
+      text: text || "本文が未設定です",
+    });
+  };
+
+  const moveBodyTooltip = (event) => {
+    setTooltip(prev => prev.visible ? { ...prev, x: event.clientX + 12, y: event.clientY + 12 } : prev);
+  };
+
+  const hideBodyTooltip = () => {
+    setTooltip({ visible: false, x: 0, y: 0, text: "" });
+  };
+
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-bold text-slate-800">マスタ管理</h2>
         <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => {
-                const url = activeLayout ? `http://localhost:8000/api/template-csv?layout_name=${encodeURIComponent(activeLayout)}` : 'http://localhost:8000/api/template-csv';
-                window.location.href = url;
-            }}>
+            <Button variant="secondary" onClick={handleTemplateDownload}>
                  <Download className="w-4 h-4" /> CSVダウンロード
             </Button>
             <Button variant="secondary" onClick={() => setImportModalOpen(true)}>
@@ -567,20 +698,47 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
             </Button>
           </div>
         </div>
+        <div className="border-b border-slate-200 px-4 py-3 bg-slate-50">
+          <p className="text-xs text-slate-500">
+            使えるプレースホルダ:
+            {" "}
+            <code>{"{{ company_name }}"}</code>
+            {" / "}
+            <code>{"{{ department }}"}</code>
+            {" / "}
+            <code>{"{{ name }}"}</code>
+            {" / "}
+            <code>{"{{ honorific }}"}</code>
+            {" / "}
+            <code>{"{{ to_email }}"}</code>
+            {" / "}
+            <code>{"{{ cc_email }}"}</code>
+          </p>
+        </div>
 
         {/* Table */}
         <div className="overflow-auto flex-1">
-          <table className="w-full text-sm text-left">
+          <table className="w-full text-sm text-left table-fixed">
+            <colgroup>
+              <col style={{ width: `${columnWidths.actions}px` }} />
+              <col style={{ width: `${columnWidths.keyword}px` }} />
+              <col style={{ width: `${columnWidths.company}px` }} />
+              <col style={{ width: `${columnWidths.department}px` }} />
+              <col style={{ width: `${columnWidths.person}px` }} />
+              <col style={{ width: `${columnWidths.toEmail}px` }} />
+              <col style={{ width: `${columnWidths.ccEmail}px` }} />
+              <col style={{ width: `${columnWidths.body}px` }} />
+            </colgroup>
             <thead className="bg-slate-50 text-slate-500 font-medium sticky top-0 shadow-sm z-10">
               <tr>
-                <th className="p-3 border-b text-xs w-[80px]">操作</th>
-                <th className="p-3 border-b">ファイル名</th>
-                <th className="p-3 border-b">会社名</th>
-                <th className="p-3 border-b">所属</th>
-                <th className="p-3 border-b">担当者</th>
-                <th className="p-3 border-b">To Email</th>
-                <th className="p-3 border-b">CC Email</th>
-                <th className="p-3 border-b w-1/3">テンプレート (プレビュー)</th>
+                <th className="p-3 border-b text-xs relative">操作<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("actions", e)} /></th>
+                <th className="p-3 border-b relative">ファイル名<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("keyword", e)} /></th>
+                <th className="p-3 border-b relative">会社名<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("company", e)} /></th>
+                <th className="p-3 border-b relative">所属<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("department", e)} /></th>
+                <th className="p-3 border-b relative">担当者<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("person", e)} /></th>
+                <th className="p-3 border-b relative">To Email<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("toEmail", e)} /></th>
+                <th className="p-3 border-b relative">CC Email<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("ccEmail", e)} /></th>
+                <th className="p-3 border-b relative">本文<div className="absolute right-0 top-0 h-full w-2 cursor-col-resize" onMouseDown={(e) => startColumnResize("body", e)} /></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -609,14 +767,29 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
                   <td className="p-3">
                     {row.name} <span className="text-slate-400 text-xs">{row.honorific}</span>
                   </td>
-                  <td className="p-3 text-slate-600 max-w-[150px] truncate" title={row.to_email}>{row.to_email}</td>
-                  <td className="p-3 text-slate-600 max-w-[150px] truncate" title={row.cc_email}>{row.cc_email}</td>
-                  <td className="p-3 text-slate-500 max-w-xs cursor-pointer hover:bg-indigo-50" onClick={() => {
+                  <td className="p-3 text-slate-600 truncate" title={row.to_email}>{row.to_email}</td>
+                  <td className="p-3 text-slate-600 truncate" title={row.cc_email}>{row.cc_email}</td>
+                  <td className="p-3 text-slate-500 cursor-pointer hover:bg-indigo-50" onClick={() => {
                         setEditingRow(row);
                         setEditModalOpen(true);
                   }} title="クリックして編集">
-                    <div className="line-clamp-2 whitespace-pre-wrap text-xs">
-                        {row.body_template}
+                    <div className="flex items-center gap-2 text-[11px] leading-tight">
+                        <span
+                          className="inline-flex items-center px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 cursor-help"
+                          onMouseEnter={(e) => showBodyTooltip(e, row.body_template || "テンプレート本文が未設定です")}
+                          onMouseMove={moveBodyTooltip}
+                          onMouseLeave={hideBodyTooltip}
+                        >
+                          テンプレート
+                        </span>
+                        <span
+                          className="inline-flex items-center px-2 py-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 cursor-help"
+                          onMouseEnter={(e) => showBodyTooltip(e, renderBodyPreviewFromRow(row) || "プレビュー本文が未設定です")}
+                          onMouseMove={moveBodyTooltip}
+                          onMouseLeave={hideBodyTooltip}
+                        >
+                          プレビュー
+                        </span>
                     </div>
                   </td>
                 </tr>
@@ -629,6 +802,14 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
             </tbody>
           </table>
         </div>
+        {tooltip.visible && (
+          <div
+            className="fixed z-[100] max-w-[520px] whitespace-pre-wrap rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 shadow-lg pointer-events-none"
+            style={{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }}
+          >
+            {tooltip.text}
+          </div>
+        )}
       </Card>
 
       {/* Edit Modal */}
@@ -677,39 +858,38 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
                         key={editingRow.id} // Add key to force re-render when row changes
                         onSubmit={(e) => {
                         e.preventDefault();
-                        const formData = new FormData(e.target);
-                        const data = Object.fromEntries(formData.entries());
+                        if (!editingForm) return;
                         handleEditSave({
                             ...editingRow,
-                            ...data
+                            ...editingForm
                         });
                     }} className="grid grid-cols-2 gap-6">
                         
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">レイアウト名</label>
-                                <input name="layout_name" defaultValue={editingRow.layout_name} className="w-full border rounded p-2" required />
+                                <input name="layout_name" value={editingForm?.layout_name || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, layout_name: e.target.value }))} className="w-full border rounded p-2" required />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">ファイル名キーワード</label>
-                                <input name="pdf_filename_keyword" defaultValue={editingRow.pdf_filename_keyword} className="w-full border rounded p-2" required />
+                                <input name="pdf_filename_keyword" value={editingForm?.pdf_filename_keyword || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, pdf_filename_keyword: e.target.value }))} className="w-full border rounded p-2" required />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">会社名</label>
-                                <input name="company_name" defaultValue={editingRow.company_name} className="w-full border rounded p-2" />
+                                <input name="company_name" value={editingForm?.company_name || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, company_name: e.target.value }))} className="w-full border rounded p-2" />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">所属</label>
-                                <input name="department" defaultValue={editingRow.department} className="w-full border rounded p-2" />
+                                <input name="department" value={editingForm?.department || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, department: e.target.value }))} className="w-full border rounded p-2" />
                             </div>
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="col-span-2">
                                     <label className="block text-sm font-medium text-slate-700 mb-1">氏名</label>
-                                    <input name="name" defaultValue={editingRow.name} className="w-full border rounded p-2" />
+                                    <input name="name" value={editingForm?.name || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, name: e.target.value }))} className="w-full border rounded p-2" />
                                 </div>
                                 <div className="col-span-1">
                                     <label className="block text-sm font-medium text-slate-700 mb-1">敬称</label>
-                                    <input name="honorific" defaultValue={editingRow.honorific} className="w-full border rounded p-2" />
+                                    <input name="honorific" value={editingForm?.honorific || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, honorific: e.target.value }))} className="w-full border rounded p-2" />
                                 </div>
                             </div>
                         </div>
@@ -717,15 +897,44 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">To Email (カンマ区切り)</label>
-                                <input name="to_email" defaultValue={editingRow.to_email} className="w-full border rounded p-2" />
+                                <input name="to_email" value={editingForm?.to_email || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, to_email: e.target.value }))} className="w-full border rounded p-2" />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">CC Email (カンマ区切り)</label>
-                                <input name="cc_email" defaultValue={editingRow.cc_email} className="w-full border rounded p-2" />
+                                <input name="cc_email" value={editingForm?.cc_email || ""} onChange={(e) => setEditingForm(prev => ({ ...prev, cc_email: e.target.value }))} className="w-full border rounded p-2" />
                             </div>
-                            <div className="h-full flex flex-col">
-                                <label className="block text-sm font-medium text-slate-700 mb-1">メール本文テンプレート</label>
-                                <textarea name="body_template" defaultValue={editingRow.body_template} className="w-full border rounded p-2 flex-1 min-h-[150px] font-mono text-sm" />
+                            <div className="flex flex-col">
+                                <div className="flex items-center justify-between mb-1">
+                                  <label className="block text-sm font-medium text-slate-700">本文</label>
+                                  <div className="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
+                                    <button
+                                      type="button"
+                                      className={cn("px-3 py-1", bodyViewMode === "template" ? "bg-indigo-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}
+                                      onClick={() => setBodyViewMode("template")}
+                                    >
+                                      テンプレート
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={cn("px-3 py-1", bodyViewMode === "preview" ? "bg-indigo-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}
+                                      onClick={() => setBodyViewMode("preview")}
+                                    >
+                                      プレビュー
+                                    </button>
+                                  </div>
+                                </div>
+                                {bodyViewMode === "template" ? (
+                                  <textarea
+                                    name="body_template"
+                                    value={editingForm?.body_template || ""}
+                                    onChange={(e) => setEditingForm(prev => ({ ...prev, body_template: e.target.value }))}
+                                    className="w-full border rounded p-2 min-h-[220px] max-h-[40vh] font-mono text-sm resize-y"
+                                  />
+                                ) : (
+                                  <div className="w-full border rounded p-2 min-h-[220px] max-h-[40vh] overflow-y-auto whitespace-pre-wrap bg-slate-50 text-sm text-slate-700">
+                                    {renderBodyPreview() || "プレビューする本文がありません"}
+                                  </div>
+                                )}
                             </div>
                         </div>
 

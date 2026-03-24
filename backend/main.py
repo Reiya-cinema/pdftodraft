@@ -2,6 +2,8 @@ import io
 import zipfile
 import csv
 import logging
+import unicodedata
+from urllib.parse import quote
 from typing import List, Optional
 from email import policy
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Form
@@ -12,6 +14,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 import pandas as pd
 from email.message import EmailMessage
+from email.header import Header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -110,6 +113,10 @@ def resolve_message_id_domain(from_header: str) -> Optional[str]:
     if "@" not in address:
         return None
     return address.split("@", 1)[1]
+
+def normalize_match_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value or "")
+    return normalized.replace(" ", "").replace("\u3000", "")
 
 def get_or_create_layout_setting(layout_name: str, db: Session) -> LayoutSetting:
     layout_setting = db.query(LayoutSetting).filter(LayoutSetting.layout_name == layout_name).first()
@@ -225,11 +232,13 @@ def get_template_csv(layout_name: Optional[str] = None, db: Session = Depends(ge
     csv_bytes = csv_string.encode('shift_jis', errors='replace')
     
     filename = f"{layout_name}.csv" if layout_name else "template.csv"
+    encoded_filename = quote(filename)
+    content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
 
     return StreamingResponse(
         io.BytesIO(csv_bytes),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": content_disposition}
     )
 
 @app.get("/api/layouts")
@@ -364,12 +373,13 @@ async def generate_drafts(
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for file in files:
             filename = file.filename
+            normalized_filename = normalize_match_text(filename)
             file_content = await file.read()
             
             # Find matching config
             matched_config = None
             for config in configs:
-                if config.pdf_filename_keyword in filename:
+                if normalize_match_text(config.pdf_filename_keyword) in normalized_filename:
                     matched_config = config
                     break
             
@@ -413,7 +423,7 @@ async def generate_drafts(
                     msg['Content-Class'] = 'urn:content-classes:message'  # Improves Outlook draft detection
                     msg['Date'] = formatdate(localtime=True)
                     msg['Message-ID'] = make_msgid(domain=message_id_domain)
-                    msg['Subject'] = subject
+                    msg['Subject'] = Header(subject or "", 'utf-8').encode()
                     msg['From'] = from_header
                     msg['To'] = to_email
                     msg['Cc'] = cc_email
@@ -424,7 +434,11 @@ async def generate_drafts(
                     
                     # Attach PDF
                     part = MIMEApplication(file_content, _subtype='pdf')
-                    part.add_header('Content-Disposition', 'attachment', filename=filename)
+                    part.add_header(
+                        'Content-Disposition',
+                        'attachment',
+                        filename=('utf-8', '', filename),
+                    )
                     msg.attach(part)
                     
                     # Write to zip
