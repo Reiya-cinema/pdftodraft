@@ -3,37 +3,44 @@ import zipfile
 import csv
 import logging
 from typing import List, Optional
+from email import policy
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import pandas as pd
 from email.message import EmailMessage
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from io import BytesIO
 
-from backend.models import Base, DraftConfig, SessionLocal, engine, init_db
+from backend.models import Base, DraftConfig, LayoutSetting, SessionLocal, engine, init_db, get_db
 
 # Initialize DB
 init_db()
 
 app = FastAPI()
 
+# 開発環境用にCORSを設定
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello World. This is the API server. For the frontend, please visit http://localhost:5173"}
+
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # Pydantic Models
 class ConfigOut(BaseModel):
@@ -47,9 +54,30 @@ class ConfigOut(BaseModel):
     to_email: Optional[str]
     cc_email: Optional[str]
     body_template: Optional[str]
+    sender_email: Optional[str] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+class ConfigUpdate(BaseModel):
+    id: Optional[int]
+    layout_name: str
+    pdf_filename_keyword: str
+    company_name: Optional[str] = ""
+    department: Optional[str] = ""
+    name: Optional[str] = ""
+    honorific: Optional[str] = "様"
+    to_email: Optional[str] = ""
+    cc_email: Optional[str] = ""
+    body_template: Optional[str] = ""
+
+class LayoutSettingOut(BaseModel):
+    layout_name: str
+    sender_email: Optional[str] = ""
+
+    model_config = ConfigDict(from_attributes=True)
+
+class LayoutSettingUpdate(BaseModel):
+    sender_email: Optional[str] = ""
 
 class ImportResult(BaseModel):
     success: bool
@@ -62,12 +90,147 @@ class ImportResult(BaseModel):
 def read_info():
     return {"app": "pdftodraft", "version": "1.0.0"}
 
+def normalize_sender_email(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return str(value).strip()
+
+def resolve_from_header(value: Optional[str]) -> str:
+    sender_email = normalize_sender_email(value)
+    if not sender_email:
+        return "sender@example.com"
+
+    display_name, address = parseaddr(sender_email)
+    if address:
+        return formataddr((display_name, address)) if display_name else address
+    return sender_email
+
+def resolve_message_id_domain(from_header: str) -> Optional[str]:
+    _, address = parseaddr(from_header)
+    if "@" not in address:
+        return None
+    return address.split("@", 1)[1]
+
+def get_or_create_layout_setting(layout_name: str, db: Session) -> LayoutSetting:
+    layout_setting = db.query(LayoutSetting).filter(LayoutSetting.layout_name == layout_name).first()
+    if layout_setting:
+        return layout_setting
+
+    layout_setting = LayoutSetting(layout_name=layout_name, sender_email="")
+    db.add(layout_setting)
+    db.commit()
+    db.refresh(layout_setting)
+    return layout_setting
+
+@app.get("/api/layout-settings/{layout_name}", response_model=LayoutSettingOut)
+def get_layout_setting(layout_name: str, db: Session = Depends(get_db)):
+    return get_or_create_layout_setting(layout_name, db)
+
+@app.put("/api/layout-settings/{layout_name}", response_model=LayoutSettingOut)
+def update_layout_setting(layout_name: str, payload: LayoutSettingUpdate, db: Session = Depends(get_db)):
+    sender_email = normalize_sender_email(payload.sender_email)
+    if sender_email and "@" not in parseaddr(sender_email)[1]:
+        raise HTTPException(status_code=400, detail="sender_emailの形式が不正です")
+
+    layout_setting = get_or_create_layout_setting(layout_name, db)
+    layout_setting.sender_email = sender_email
+    db.commit()
+    db.refresh(layout_setting)
+    return layout_setting
+
+@app.put("/api/configs/{config_id}", response_model=ConfigOut)
+def update_config(config_id: int, config: ConfigUpdate, db: Session = Depends(get_db)):
+    db_config = db.query(DraftConfig).filter(DraftConfig.id == config_id).first()
+    if not db_config:
+        raise HTTPException(status_code=404, detail="Config not found")
+
+    layout_setting = get_or_create_layout_setting(config.layout_name, db)
+    
+    # Update fields
+    db_config.layout_name = config.layout_name
+    db_config.pdf_filename_keyword = config.pdf_filename_keyword
+    db_config.company_name = config.company_name
+    db_config.department = config.department
+    db_config.name = config.name
+    db_config.honorific = config.honorific
+    db_config.to_email = config.to_email
+    db_config.cc_email = config.cc_email
+    db_config.body_template = config.body_template
+    
+    try:
+        db.commit()
+        db.refresh(db_config)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+    db_config.sender_email = layout_setting.sender_email
+    return db_config
+
+@app.delete("/api/configs/{config_id}")
+def delete_config(config_id: int, db: Session = Depends(get_db)):
+    db_config = db.query(DraftConfig).filter(DraftConfig.id == config_id).first()
+    if not db_config:
+        raise HTTPException(status_code=404, detail="Config not found")
+    
+    try:
+        db.delete(db_config)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    return {"message": "Config deleted successfully"}
+
 @app.get("/api/configs", response_model=List[ConfigOut])
 def get_configs(layout_name: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(DraftConfig)
     if layout_name:
         query = query.filter(DraftConfig.layout_name == layout_name)
-    return query.all()
+    configs = query.all()
+
+    sender_lookup = {
+        item.layout_name: item.sender_email or ""
+        for item in db.query(LayoutSetting).all()
+    }
+    for config in configs:
+        config.sender_email = sender_lookup.get(config.layout_name, "")
+    return configs
+
+@app.get("/api/template-csv")
+def get_template_csv(layout_name: Optional[str] = None, db: Session = Depends(get_db)):
+    headers = [
+        "layout_name", "pdf_filename_keyword", "company_name", 
+        "department", "name", "honorific", "to_email", "cc_email", "body_template"
+    ]
+    # Create a CSV in memory with shift-jis encoding (common for Excel in Japan)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+
+    if layout_name:
+        configs = db.query(DraftConfig).filter(DraftConfig.layout_name == layout_name).all()
+        for c in configs:
+            writer.writerow([
+                c.layout_name, c.pdf_filename_keyword, c.company_name,
+                c.department, c.name, c.honorific, c.to_email, c.cc_email, c.body_template
+            ])
+
+    # If no data and no layout specified, you might want a sample row, 
+    # but the user requested "header only" if nothing is there.
+    # So we do nothing else.
+    
+    csv_string = output.getvalue()
+    # Use errors='replace' or 'ignore' to prevent crash on unencodable characters
+    csv_bytes = csv_string.encode('shift_jis', errors='replace')
+    
+    filename = f"{layout_name}.csv" if layout_name else "template.csv"
+
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 @app.get("/api/layouts")
 def get_layouts(db: Session = Depends(get_db)):
@@ -91,11 +254,26 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         "layout_name", "pdf_filename_keyword", "company_name", 
         "department", "name", "honorific", "to_email", "cc_email", "body_template"
     ]
+
+    # Normalize column names (strip whitespace)
+    df.columns = df.columns.astype(str).str.strip()
     
     # Check headers
     missing_cols = [col for col in required_columns if col not in df.columns]
     if missing_cols:
         return {"success": False, "total_processed": 0, "errors": [{"line": 0, "error": f"必須カラムが不足しています: {', '.join(missing_cols)}", "value": ""}]}
+
+    def normalize_emails(val):
+        if pd.isna(val):
+            return ""
+        s = str(val).strip()
+        if not s:
+            return ""
+        # Replace common delimiters with comma
+        s = s.replace('、', ',').replace('；', ',').replace(';', ',').replace('\n', ',').replace('\r', ',')
+        # Split by comma and strip each part to remove surrounding spaces
+        parts = [e.strip() for e in s.split(',') if e.strip()]
+        return ', '.join(parts)
 
     errors = []
     processed_count = 0
@@ -112,7 +290,9 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
             continue
 
         # Email validation (simple regex or library)
-        to_email = str(row['to_email']).strip() if not pd.isna(row['to_email']) else ""
+        to_email = normalize_emails(row['to_email'])
+        cc_email = normalize_emails(row.get('cc_email', ''))
+
         if to_email and '@' not in to_email:
              errors.append({"line": line_num, "error": f"to_emailの形式が不正です", "value": to_email})
              continue
@@ -134,11 +314,12 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
             "name": str(row['name']) if not pd.isna(row['name']) else "",
             "honorific": str(row['honorific']) if not pd.isna(row['honorific']) else "様",
             "to_email": to_email,
-            "cc_email": str(row['cc_email']).strip() if not pd.isna(row['cc_email']) else "",
+            "cc_email": cc_email,
             "body_template": str(row['body_template']) if not pd.isna(row['body_template']) else ""
         }
 
         try:
+            get_or_create_layout_setting(layout, db)
             if existing:
                 for key, value in data.items():
                     setattr(existing, key, value)
@@ -153,20 +334,30 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
     
     return {"success": True, "total_processed": processed_count, "errors": errors}
 
+import json
+
 @app.post("/api/generate-drafts")
 async def generate_drafts(
     files: List[UploadFile] = File(...),
     layout_name: str = Form(...),
+    overrides: str = Form(None), # JSON string: { filename: {subject, body, to, cc} }
     db: Session = Depends(get_db)
 ):
     zip_buffer = io.BytesIO()
+    layout_setting = get_or_create_layout_setting(layout_name, db)
+    from_header = resolve_from_header(layout_setting.sender_email)
+    message_id_domain = resolve_message_id_domain(from_header)
     
+    # Parse overrides if present
+    override_map = {}
+    if overrides:
+        try:
+            override_map = json.loads(overrides)
+        except json.JSONDecodeError:
+            pass
+
     # Pre-fetch all configs for the layout to minimize DB hits
     configs = db.query(DraftConfig).filter(DraftConfig.layout_name == layout_name).all()
-    # Create a simple lookup map: keyword -> config
-    # Since keywords are substrings, we need to iterate. 
-    # Optimization: Sort keywords by length desc to match longest first if there's overlap? 
-    # Or just find first match. Simplest is linear search for each file.
     
     generated_count = 0
     
@@ -182,41 +373,64 @@ async def generate_drafts(
                     matched_config = config
                     break
             
-            if matched_config:
+            if matched_config or (filename in override_map):
                 # Compile Template
                 try:
-                    # Variables for template
-                    context = {
-                        "company_name": matched_config.company_name or "",
-                        "department": matched_config.department or "",
-                        "name": matched_config.name or "",
-                        "honorific": matched_config.honorific or "様",
-                        "to_email": matched_config.to_email or "",
-                        "cc_email": matched_config.cc_email or "",
-                    }
+                    # Check if overridden
+                    ov = override_map.get(filename)
                     
-                    from jinja2 import Template
-                    template = Template(matched_config.body_template or "")
-                    body_text = template.render(context)
-                    
+                    if ov:
+                        # Use overridden values directly
+                        body_text = ov.get('body', "")
+                        subject = ov.get('subject', "書類送付のご案内")
+                        to_email = ov.get('to_email', "")
+                        cc_email = ov.get('cc_email', "")
+                    elif matched_config:
+                         # Variables for template
+                        context = {
+                            "company_name": matched_config.company_name or "",
+                            "department": matched_config.department or "",
+                            "name": matched_config.name or "",
+                            "honorific": matched_config.honorific or "様",
+                            "to_email": matched_config.to_email or "",
+                            "cc_email": matched_config.cc_email or "",
+                        }
+                        
+                        from jinja2 import Template
+                        template = Template(matched_config.body_template or "")
+                        body_text = template.render(context)
+                        subject = "書類送付のご案内"
+                        to_email = matched_config.to_email or ""
+                        cc_email = matched_config.cc_email or ""
+                    else:
+                        # Should not happen given the if condition, but safety
+                        continue
+
                     # Create EML
                     msg = MIMEMultipart()
-                    msg['Subject'] = "書類送付のご案内" # Default subject
-                    msg['From'] = "sender@example.com" # Placeholder, user will change in mailer
-                    msg['To'] = matched_config.to_email or ""
-                    msg['Cc'] = matched_config.cc_email or ""
+                    msg['X-Unsent'] = '1'  # Open as draft in Outlook
+                    msg['X-Mozilla-Status'] = '0000' # Open as draft in Thunderbird
+                    msg['Content-Class'] = 'urn:content-classes:message'  # Improves Outlook draft detection
+                    msg['Date'] = formatdate(localtime=True)
+                    msg['Message-ID'] = make_msgid(domain=message_id_domain)
+                    msg['Subject'] = subject
+                    msg['From'] = from_header
+                    msg['To'] = to_email
+                    msg['Cc'] = cc_email
+                    msg['Reply-To'] = from_header
                     
                     # Attach Body
                     msg.attach(MIMEText(body_text, 'plain', 'utf-8'))
                     
                     # Attach PDF
-                    part = MIMEApplication(file_content, Name=filename)
-                    part['Content-Disposition'] = f'attachment; filename="{filename}"'
+                    part = MIMEApplication(file_content, _subtype='pdf')
+                    part.add_header('Content-Disposition', 'attachment', filename=filename)
                     msg.attach(part)
                     
                     # Write to zip
                     eml_filename = f"{filename}.eml"
-                    zip_file.writestr(eml_filename, msg.as_bytes())
+                    # Use SMTP policy to force CRLF line endings for better Outlook compatibility.
+                    zip_file.writestr(eml_filename, msg.as_bytes(policy=policy.SMTP))
                     generated_count += 1
                     
                 except Exception as e:
@@ -241,6 +455,9 @@ if os.path.exists("static"):
 else:
     # For local dev without build, just a placeholder or nothing
     pass
+
+from backend.analyze_router import router as analyze_router
+app.include_router(analyze_router)
 
 if __name__ == "__main__":
     import uvicorn
