@@ -465,13 +465,14 @@ async def generate_drafts(
         headers={"Content-Disposition": f"attachment; filename=drafts.zip"}
     )
 
+from backend.analyze_router import router as analyze_router
+app.include_router(analyze_router)
+
 # Serve Frontend (Catch-all for SPA)
+# Keep this after API router registration so /api/* is always handled by FastAPI routes.
 frontend_dir = "static" if os.path.exists("static") else ("dist" if os.path.exists("dist") else None)
 if frontend_dir:
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="static")
-
-from backend.analyze_router import router as analyze_router
-app.include_router(analyze_router)
 
 if __name__ == "__main__":
     import uvicorn
