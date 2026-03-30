@@ -34,17 +34,16 @@ class LayoutSetting(Base):
     draft_subject = Column(String, nullable=True)
 
 def _resolve_database_url() -> str:
-    """Prefer DATABASE_URL; else SQLite. Use SQLITE_PATH for a persistent file (e.g. Railway volume)."""
-    explicit = os.environ.get("DATABASE_URL", "").strip()
-    if explicit:
-        return explicit
-    sqlite_path = os.environ.get("SQLITE_PATH", "pdftodraft.db").strip() or "pdftodraft.db"
-    if os.path.isabs(sqlite_path):
-        parent = os.path.dirname(sqlite_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        return f"sqlite:///{sqlite_path}"
-    return f"sqlite:///./{sqlite_path}"
+    """
+    Same idea as seikyu_split: no env vars. If Railway Volume is mounted at /data,
+    use persistent SQLite there; otherwise project-local ./pdftodraft.db.
+    """
+    if os.path.exists("/data"):
+        print("Using persistent volume database: /data/pdftodraft.db")
+        return "sqlite:////data/pdftodraft.db"
+
+    print("Using local database: ./pdftodraft.db")
+    return "sqlite:///./pdftodraft.db"
 
 
 SQLALCHEMY_DATABASE_URL = _resolve_database_url()
