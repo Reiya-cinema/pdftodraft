@@ -36,5 +36,8 @@ htmlcov/
 ehthumbs.db
 Thumbs.db
 
+# SQLite (local dev; production uses /data on Railway)
+pdftodraft.db
+
 # Sample data
 sample/
