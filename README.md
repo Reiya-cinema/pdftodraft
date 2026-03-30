@@ -89,6 +89,41 @@ npm run dev
 - CORS は localhost:5173 と 127.0.0.1:5173 を許可しています
 - 本番用 static ディレクトリが存在する場合は FastAPI から配信します
 
+## Railway での運用（SQLite の永続化）
+
+コンテナのファイルシステムは**再デプロイや再起動で消える**ことがあります。SQLite をアプリ直下（例: `./pdftodraft.db`）だけに置いていると、**マスタデータが毎回空に戻る**可能性があります。本番では次を推奨します。
+
+### 1. Volume を付ける
+
+1. Railway の対象サービスを開く
+2. **Settings → Volumes** で Volume を追加する
+3. **Mount Path** を決める（例: `/data`）。このパスは後で環境変数と一致させます
+
+### 2. 環境変数を設定する
+
+次のいずれかを設定します（どちらか一方で十分です）。
+
+**推奨（分かりやすい）**
+
+```text
+SQLITE_PATH=/data/pdftodraft.db
+```
+
+**または SQLAlchemy の URL を直接指定**
+
+```text
+DATABASE_URL=sqlite:////data/pdftodraft.db
+```
+
+（絶対パスの SQLite は `sqlite:////` のようにスラッシュが 4 つ続く形式です。）
+
+`SQLITE_PATH` を絶対パスにした場合、アプリ起動時に親ディレクトリが無ければ作成します。
+
+### 3. 注意点
+
+- Volume を付ける**前**にだけ存在していた `./pdftodraft.db` 上のデータは、Volume 上の新しいファイルには**自動では引き継がれません**。必要なら事前に **CSV エクスポート**で退避してください。
+- 重要データは **定期的に CSV でバックアップ**するか、将来的に **PostgreSQL 等のマネージド DB**への移行を検討してください。
+
 ## よく使う API
 
 - GET /api/info: 動作確認
