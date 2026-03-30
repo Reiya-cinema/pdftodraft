@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Text, UniqueConstraint, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -29,6 +29,7 @@ class LayoutSetting(Base):
     id = Column(Integer, primary_key=True, index=True)
     layout_name = Column(String, unique=True, index=True, nullable=False)
     sender_email = Column(String, nullable=True)
+    draft_subject = Column(String, nullable=True)
 
 # SQLite setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./pdftodraft.db"
@@ -47,3 +48,8 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    cols = [c["name"] for c in inspector.get_columns("layout_settings")]
+    if "draft_subject" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE layout_settings ADD COLUMN draft_subject VARCHAR"))

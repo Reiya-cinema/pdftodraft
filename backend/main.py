@@ -80,11 +80,13 @@ class ConfigUpdate(BaseModel):
 class LayoutSettingOut(BaseModel):
     layout_name: str
     sender_email: Optional[str] = ""
+    draft_subject: Optional[str] = ""
 
     model_config = ConfigDict(from_attributes=True)
 
 class LayoutSettingUpdate(BaseModel):
     sender_email: Optional[str] = ""
+    draft_subject: Optional[str] = ""
 
 class ImportResult(BaseModel):
     success: bool
@@ -127,7 +129,7 @@ def get_or_create_layout_setting(layout_name: str, db: Session) -> LayoutSetting
     if layout_setting:
         return layout_setting
 
-    layout_setting = LayoutSetting(layout_name=layout_name, sender_email="")
+    layout_setting = LayoutSetting(layout_name=layout_name, sender_email="", draft_subject="")
     db.add(layout_setting)
     db.commit()
     db.refresh(layout_setting)
@@ -145,6 +147,7 @@ def update_layout_setting(layout_name: str, payload: LayoutSettingUpdate, db: Se
 
     layout_setting = get_or_create_layout_setting(layout_name, db)
     layout_setting.sender_email = sender_email
+    layout_setting.draft_subject = (payload.draft_subject or "").strip()
     db.commit()
     db.refresh(layout_setting)
     return layout_setting
@@ -360,6 +363,7 @@ async def generate_drafts(
     layout_setting = get_or_create_layout_setting(layout_name, db)
     from_header = resolve_from_header(layout_setting.sender_email)
     message_id_domain = resolve_message_id_domain(from_header)
+    default_subject = (layout_setting.draft_subject or "").strip() or "書類送付のご案内"
     
     # Parse overrides if present
     override_map = {}
@@ -396,7 +400,7 @@ async def generate_drafts(
                     if ov:
                         # Use overridden values directly
                         body_text = ov.get('body', "")
-                        subject = ov.get('subject', "書類送付のご案内")
+                        subject = ov.get('subject', default_subject)
                         to_email = ov.get('to_email', "")
                         cc_email = ov.get('cc_email', "")
                     elif matched_config:
@@ -413,7 +417,7 @@ async def generate_drafts(
                         from jinja2 import Template
                         template = Template(matched_config.body_template or "")
                         body_text = template.render(context)
-                        subject = "書類送付のご案内"
+                        subject = default_subject
                         to_email = matched_config.to_email or ""
                         cc_email = matched_config.cc_email or ""
                     else:

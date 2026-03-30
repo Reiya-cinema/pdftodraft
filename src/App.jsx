@@ -410,7 +410,7 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
   const [activeLayout, setActiveLayout] = useState(layouts[0] || "");
   const [data, setData] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [layoutSetting, setLayoutSetting] = useState({ layout_name: "", sender_email: "" });
+  const [layoutSetting, setLayoutSetting] = useState({ layout_name: "", sender_email: "", draft_subject: "" });
   const [isSavingLayoutSetting, setIsSavingLayoutSetting] = useState(false);
   
   // Modals state
@@ -481,7 +481,7 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
 
   const fetchLayoutSetting = useCallback(async () => {
     if (!activeLayout) {
-      setLayoutSetting({ layout_name: "", sender_email: "" });
+      setLayoutSetting({ layout_name: "", sender_email: "", draft_subject: "" });
       return;
     }
 
@@ -530,11 +530,12 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
         try {
           const res = await axios.put(`/api/layout-settings/${encodeURIComponent(activeLayout)}`, {
             sender_email: layoutSetting.sender_email,
+            draft_subject: layoutSetting.draft_subject ?? "",
           });
           setLayoutSetting(res.data);
         } catch (error) {
           console.error(error);
-          alert(error?.response?.data?.detail || "送信元アドレスの保存に失敗しました");
+          alert(error?.response?.data?.detail || "レイアウト設定の保存に失敗しました");
         } finally {
           setIsSavingLayoutSetting(false);
         }
@@ -682,21 +683,32 @@ const ManagementTab = ({ layouts, refreshLayouts }) => {
 
         <div className="border-b border-slate-200 p-4 bg-white">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div className="flex-1 max-w-xl">
-              <label className="block text-sm font-medium text-slate-700 mb-1">送信元アドレス</label>
-              <input
-                value={layoutSetting.sender_email || ""}
-                onChange={e => setLayoutSetting(prev => ({ ...prev, sender_email: e.target.value }))}
-                placeholder="example@company.co.jp"
-                className="w-full border border-slate-300 rounded p-2 text-sm"
-              />
-              <p className="text-xs text-slate-400 mt-1">現在選択中のレイアウトに対して適用されます。生成される EML の From と Reply-To に使用します。</p>
+            <div className="flex flex-1 flex-col gap-3 md:flex-row md:gap-4 min-w-0">
+              <div className="flex-1 min-w-0 max-w-xl">
+                <label className="block text-sm font-medium text-slate-700 mb-1">送信元アドレス</label>
+                <input
+                  value={layoutSetting.sender_email || ""}
+                  onChange={e => setLayoutSetting(prev => ({ ...prev, sender_email: e.target.value }))}
+                  placeholder="example@company.co.jp"
+                  className="w-full border border-slate-300 rounded p-2 text-sm"
+                />
+              </div>
+              <div className="flex-1 min-w-0 max-w-xl">
+                <label className="block text-sm font-medium text-slate-700 mb-1">件名（下書き）</label>
+                <input
+                  value={layoutSetting.draft_subject ?? ""}
+                  onChange={e => setLayoutSetting(prev => ({ ...prev, draft_subject: e.target.value }))}
+                  placeholder="書類送付のご案内"
+                  className="w-full border border-slate-300 rounded p-2 text-sm"
+                />
+              </div>
             </div>
-            <Button onClick={handleSaveLayoutSetting} isLoading={isSavingLayoutSetting} className="md:min-w-[180px]">
+            <Button onClick={handleSaveLayoutSetting} isLoading={isSavingLayoutSetting} className="md:min-w-[180px] shrink-0">
               <Mail className="w-4 h-4" />
-              送信元を保存
+              保存
             </Button>
           </div>
+          <p className="text-xs text-slate-400 mt-2">送信元・件名は現在のレイアウトに保存され、生成される EML の From / Reply-To / Subject に使用します。件名を空にすると「書類送付のご案内」になります。</p>
         </div>
         <div className="border-b border-slate-200 px-4 py-3 bg-slate-50">
           <p className="text-xs text-slate-500">

@@ -4,7 +4,7 @@ from typing import List, Dict
 import unicodedata
 import pandas as pd
 import io
-from .models import DraftConfig, get_db
+from .models import DraftConfig, LayoutSetting, get_db
 from jinja2 import Template
 from pydantic import BaseModel
 
@@ -37,6 +37,9 @@ async def analyze_pdfs(
     db: Session = Depends(get_db)
 ):
     configs = db.query(DraftConfig).filter(DraftConfig.layout_name == layout_name).all()
+    layout_setting = db.query(LayoutSetting).filter(LayoutSetting.layout_name == layout_name).first()
+    default_subject = (layout_setting.draft_subject or "").strip() if layout_setting else ""
+    default_subject = default_subject or "書類送付のご案内"
     results = []
 
     for file in files:
@@ -72,7 +75,7 @@ async def analyze_pdfs(
                     honorific=matched_config.honorific or "",
                     to_email=matched_config.to_email or "",
                     cc_email=matched_config.cc_email or "",
-                    subject="書類送付のご案内", # Default subject
+                    subject=default_subject,
                     body=body_text
                 ))
             except Exception as e:
