@@ -217,7 +217,7 @@ def get_template_csv(layout_name: Optional[str] = None, db: Session = Depends(ge
         "layout_name", "pdf_filename_keyword", "company_name", 
         "department", "name", "honorific", "to_email", "cc_email", "body_template"
     ]
-    # Create a CSV in memory with shift-jis encoding (common for Excel in Japan)
+    # Create a CSV in memory with cp932 encoding (common for Excel in Japan)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
@@ -236,7 +236,7 @@ def get_template_csv(layout_name: Optional[str] = None, db: Session = Depends(ge
     
     csv_string = output.getvalue()
     # Use errors='replace' or 'ignore' to prevent crash on unencodable characters
-    csv_bytes = csv_string.encode('shift_jis', errors='replace')
+    csv_bytes = csv_string.encode('cp932', errors='replace')
     
     filename = f"{layout_name}.csv" if layout_name else "template.csv"
     encoded_filename = quote(filename)
@@ -257,14 +257,23 @@ def get_layouts(db: Session = Depends(get_db)):
 @app.post("/api/import-csv")
 async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
-    try:
-        # Detect encoding (fallback to utf-8 if shift_jis fails, standard excel csv often shift_jis)
+    # Detect encoding (try several common encodings for Japanese CSVs)
+    encodings = ['utf-8-sig', 'cp932', 'utf-8', 'shift_jis']
+    df = None
+    error_msg = ""
+    for enc in encodings:
         try:
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv(io.BytesIO(content), encoding='shift_jis')
-    except Exception as e:
-        return {"success": False, "total_processed": 0, "errors": [{"line": 0, "error": f"CSV解析エラー: {str(e)}", "value": ""}]}
+            df = pd.read_csv(io.BytesIO(content), encoding=enc)
+            break
+        except UnicodeDecodeError as e:
+            error_msg = str(e)
+            continue
+        except Exception as e:
+            error_msg = str(e)
+            break
+    
+    if df is None:
+        return {"success": False, "total_processed": 0, "errors": [{"line": 0, "error": f"CSV解析エラー: {error_msg}", "value": ""}]}
 
     required_columns = [
         "layout_name", "pdf_filename_keyword", "company_name", 
